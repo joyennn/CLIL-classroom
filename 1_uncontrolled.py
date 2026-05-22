@@ -1,4 +1,3 @@
-# main.py
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,7 +9,6 @@ import os, uvicorn, traceback, re, json, random
 
 # ─────────────────────────────────────────────────────────────
 # Anthropic Python SDK (Claude)
-#   pip install anthropic fastapi uvicorn pydantic
 # ─────────────────────────────────────────────────────────────
 try:
     from anthropic import Anthropic
@@ -19,28 +17,24 @@ except Exception as e:
     print("[BOOT] Anthropic SDK import 실패:", e)
 
 # ─────────────────────────────────────────────────────────────
-# 경로/기본 설정
+# path
 # ─────────────────────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HTML_PATH = os.path.join(BASE_DIR, "index.html")
 PERSONA_JSON_PATH = os.path.join(BASE_DIR, "persona.json")
 
 # ─────────────────────────────────────────────────────────────
-# persona.json 로더 (견고)
-#   - 단일 객체 { Class_information, Students } 또는
-#     "상단 객체 + 하단 배열" 하이브리드 형태 모두 지원
+# persona.json loader
 # ─────────────────────────────────────────────────────────────
 def load_persona_json(path: str) -> Tuple[Dict, List[Dict]]:
     with open(path, "r", encoding="utf-8") as f:
         raw = f.read().strip()
 
     def try_load_all(text: str):
-        # (1) 단일 JSON 객체 시도
         try:
             data = json.loads(text)
             class_info = data.get("Class_information", {})
             students = data.get("Students", [])
-            # 객체 내부의 다른 "학생 배열"이 있으면 합치기
             for k, v in list(data.items()):
                 if k != "Students" and isinstance(v, list) and all(isinstance(x, dict) and x.get("student_id") for x in v):
                     students += v
@@ -48,7 +42,6 @@ def load_persona_json(path: str) -> Tuple[Dict, List[Dict]]:
         except Exception:
             pass
 
-        # (2) 상단 객체 + 하단 배열 분리
         split_points = []
         for tok in ["}\n[", "}\r\n[", "}["]:
             idx = text.find(tok)
@@ -58,8 +51,8 @@ def load_persona_json(path: str) -> Tuple[Dict, List[Dict]]:
             raise ValueError("persona.json 파싱 실패: 지원하지 않는 형식")
 
         idx, tok = sorted(split_points, key=lambda x: x[0])[0]
-        head = text[: idx + 1]                 # '}' 포함
-        tail = text[idx + (len(tok) - 1):]     # '['부터
+        head = text[: idx + 1]                 
+        tail = text[idx + (len(tok) - 1):]     
 
         data_head = json.loads(head)
         arr_tail = json.loads(tail)
@@ -75,7 +68,6 @@ def load_persona_json(path: str) -> Tuple[Dict, List[Dict]]:
 
 try:
     CLASS_INFO, STUDENTS = load_persona_json(PERSONA_JSON_PATH)
-    # student_id 중복 제거(마지막 항목 우선)
     seen = {}
     for s in STUDENTS:
         sid = s.get("student_id")
@@ -88,7 +80,7 @@ except Exception as e:
     CLASS_INFO, STUDENTS = {}, []
 
 # ─────────────────────────────────────────────────────────────
-# FastAPI 앱
+# FastAPI app
 # ─────────────────────────────────────────────────────────────
 app = FastAPI(title="Persona Classroom Chat (Claude)", version="4.2.0")
 
@@ -99,12 +91,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 정적 파일(이미지 등)
 if os.path.isdir(os.path.join(BASE_DIR, "static")):
     app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # ─────────────────────────────────────────────────────────────
-# 모델들
+# Model
 # ─────────────────────────────────────────────────────────────
 Role = Literal["system", "user", "assistant"]
 
@@ -121,16 +112,16 @@ class ChatRequest(BaseModel):
     model: str = "claude-3-5-sonnet-20240620"
     temperature: float = Field(default=0.1, ge=0.0, le=1.0)
     max_turns: int = Field(default=16, ge=2, le=64)
-    # 장면 구성
+
     active_persona_ids: List[str] = []
     responders_this_turn: Optional[List[str]] = None
-    # 언어 규칙
+
     lang: Literal["auto", "ko", "en"] = "auto"
-    # 디버그(옵션): True면 요청/응답 요약 포함
+
     debug: bool = False
 
 # ─────────────────────────────────────────────────────────────
-# 유틸: 학생 요약/선택/가드
+# Utils
 # ─────────────────────────────────────────────────────────────
 def summarize_student(s: Dict) -> str:
     kp = (s.get("korean_profile") or {})
@@ -151,7 +142,7 @@ def summarize_student(s: Dict) -> str:
 
 def pick_scene_students(active_ids: List[str]) -> List[Dict]:
     if not active_ids:
-        return STUDENTS[:]  # 전체
+        return STUDENTS[:]  
     aset = set(active_ids)
     return [s for s in STUDENTS if s.get("student_id") in aset]
 
@@ -200,8 +191,6 @@ def build_system_prompt(scene_students: List[Dict], lang_text: str) -> str:
 """.strip()
 
 def post_guard(reply: str, scene_students: List[Dict]) -> str:
-    """모델 출력을 최대 3줄로 제한 + 교사 발화 제거.
-       (빈 결과면 0줄 허용하도록 빈 문자열 반환)"""
     line_pat = re.compile(r'^(?:\[(?P<spk1>.+?)\]|(?P<spk2>[^:\[\]]+))\s*:\s*(?P<msg>.*)$')
     out_lines, seen = [], set()
     for raw in (reply or "").splitlines():
@@ -229,26 +218,18 @@ def post_guard(reply: str, scene_students: List[Dict]) -> str:
     cleaned = "\n".join(out_lines).strip()
     if cleaned:
         return cleaned
-    # 0명 응답 허용 (빈 문자열)
     return ""
 
 # ─────────────────────────────────────────────────────────────
-# Claude 메시지 변환/정규화
+# Claude message nomalization
 # ─────────────────────────────────────────────────────────────
 def to_claude_messages(conversation: List[Message]) -> List[Dict]:
-    """
-    - system은 제외 (system= 인자로 전달)
-    - user → assistant → user … 번갈이 되도록 정규화
-    - 같은 role 연속이면 병합
-    - 맨 앞이 assistant면 제거
-    """
+
     raw = [{"role": m.role, "text": m.content} for m in conversation if m.role in ("user", "assistant")]
 
-    # 맨 앞 assistant 제거
     while raw and raw[0]["role"] != "user":
         raw.pop(0)
 
-    # 같은 role 병합
     merged = []
     for m in raw:
         if not merged:
@@ -258,7 +239,6 @@ def to_claude_messages(conversation: List[Message]) -> List[Dict]:
         else:
             merged.append(m)
 
-    # 번갈이 강제 (assistant가 중간에 연속되면 스킵)
     normalized = []
     expect = "user"
     for m in merged:
@@ -277,9 +257,8 @@ def to_claude_messages(conversation: List[Message]) -> List[Dict]:
     ]
 
 # ─────────────────────────────────────────────────────────────
-# 라우트
+# Route
 # ─────────────────────────────────────────────────────────────
-# Render 헬스체크: HEAD / 를 200으로 응답
 @app.head("/")
 async def head_root():
     return Response(status_code=200)
@@ -290,7 +269,6 @@ async def serve_html():
         with open(HTML_PATH, "r", encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
-        # 파일이 없어도 200으로 간단한 안내 반환 (헬스체크 안정화)
         return HTMLResponse("<h3>Persona Classroom Chat API</h3>", status_code=200)
 
 @app.get("/health")
@@ -370,11 +348,9 @@ async def chat(req: ChatRequest):
     if not scene_students:
         raise HTTPException(status_code=400, detail="장면에 포함할 학생이 없습니다. active_persona_ids를 확인하세요.")
 
-    # 언어 규칙 + 시스템 프롬프트
     lang_text = language_rule(req.lang)
     system_prompt = build_system_prompt(scene_students, lang_text)
 
-    # 최근 대화 tail 구성 → Claude 규격으로 변환/정규화
     tail = [m for m in req.conversation][-req.max_turns:]
     claude_messages = to_claude_messages(tail)
 
@@ -404,10 +380,8 @@ async def chat(req: ChatRequest):
         return JSONResponse(resp)
 
     except Exception as e:
-        # 콘솔에 상세 스택
         print("[/chat ERROR]", e.__class__.__name__, ":", str(e))
         traceback.print_exc()
-        # 에러 유형 분류 + 원문 노출
         msg = str(e).lower()
         if any(x in msg for x in ["bad request", "must start with", "message role", "invalid", "malformed"]):
             raise HTTPException(status_code=400, detail=f"요청 형식 오류(Claude Messages): {e}")
@@ -417,10 +391,8 @@ async def chat(req: ChatRequest):
             raise HTTPException(status_code=403, detail="권한/쿼터 문제")
         if "rate" in msg and "limit" in msg:
             raise HTTPException(status_code=429, detail="요청 한도 초과")
-        # 나머지: 게이트웨이 오류로 반환(원인 노출)
         raise HTTPException(status_code=502, detail=f"모델 호출 실패: {e}")
 
 if __name__ == "__main__":
-    # Render는 PORT 환경변수를 제공하므로 반드시 0.0.0.0:$PORT 로 바인딩
     port = int(os.environ.get("PORT", 10000))  # 로컬: 8000
     uvicorn.run("main:app", host="0.0.0.0", port=port)
