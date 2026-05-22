@@ -1,2 +1,2 @@
-# When Fluency Undermines Realism: Recovering Learner-like Variation in LLM Classroom Simulation
+# When Fluency Undermines Realism: Recovering Learner-like Variation in CLIL Classroom Simulation
 
